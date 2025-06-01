@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>テキスト分割＆コピーツール</title>
+  <style>
+    :root {
+      --bg-color: #fff;
+      --text-color: #000;
+      --block-bg: #f9f9f9;
+      --editing-outline: 2px solid #007bff;
+    }
+    body.dark {
+      --bg-color: #121212;
+      --text-color: #e0e0e0;
+      --block-bg: #1e1e1e;
+    }
+    body {
+      font-family: sans-serif;
+      margin: 2rem auto;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      max-width: 800px;
+      padding: 1rem;
+    }
+    .block {
+      border: 1px solid #ccc;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      position: relative;
+      border-radius: 1rem;
+      background-color: var(--block-bg);
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+    .block.enter {
+      transform: scale(0.95);
+      opacity: 0;
+    }
+    .block.enter-active {
+      transform: scale(1);
+      opacity: 1;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-width: 120ch;
+      line-height: 1.5;
+      outline: none;
+      padding: 0.5em;
+      flex: 1;
+    }
+    pre:focus {
+      outline: var(--editing-outline);
+      background-color: var(--bg-color);
+      color: var(--text-color);
+    }
+    .button-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      position: sticky;
+      top: 1rem;
+    }
+    .button-group button {
+      font-size: 0.8em;
+      padding: 0.4em 0.8em;
+      border: none;
+      border-radius: 0.5em;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+    }
+    .button-group button:hover {
+      background-color: #0069d9;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    textarea {
+      width: 100%;
+      height: 200px;
+      margin-top: 1rem;
+      font-family: monospace;
+      line-height: 1.5;
+    }
+    .copy-toast {
+      position: fixed;
+      bottom: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: #007bff;
+      color: white;
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+      z-index: 9999;
+      pointer-events: none;
+    }
+    .copy-toast.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <h1>テキスト分割＆コピー</h1>
+  <div class="toolbar">
+    <input type="file" id="fileInput" accept=".txt">
+    <button onclick="toggleDarkMode()">🌓 ダークモード切替</button>
+    <button onclick="downloadBlocks()">💾 JSON保存</button>
+    <input type="file" id="loadJson" accept=".json">
+  </div>
+  <textarea id="textArea" placeholder="ここに読み込んだテキストが表示されます..."></textarea><br>
+  <button onclick="splitText()">▼ 分割する</button>
+  <div id="output"></div>
+  <div id="copyToast" class="copy-toast">コピーしました！</div>
+
+  <script>
+    const textArea = document.getElementById('textArea');
+    const output = document.getElementById('output');
+    const copyToast = document.getElementById('copyToast');
+    let undoStack = [], redoStack = [];
+
+    function showCopyToast() {
+      copyToast.classList.add('show');
+      setTimeout(() => copyToast.classList.remove('show'), 1500);
+    }
+
+    function saveState() {
+      const state = Array.from(output.children).map(div => div.querySelector('pre').innerText);
+      undoStack.push(JSON.parse(JSON.stringify(state)));
+      if (undoStack.length > 100) undoStack.shift();
+      redoStack = [];
+    }
+
+    function restoreState(state) {
+      output.innerHTML = '';
+      state.forEach((text, i) => createBlock(text, i));
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'z') {
+        e.preventDefault();
+        if (undoStack.length > 1) {
+          const current = undoStack.pop();
+          redoStack.push(current);
+          restoreState(undoStack[undoStack.length - 1]);
+        }
+      } else if (e.ctrlKey && e.key === 'y') {
+        e.preventDefault();
+        if (redoStack.length > 0) {
+          const next = redoStack.pop();
+          undoStack.push(next);
+          restoreState(next);
+        }
+      }
+    });
+
+    document.getElementById('fileInput').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => textArea.value = reader.result;
+      reader.readAsText(file);
+    });
+
+    function splitText() {
+      output.innerHTML = '';
+      const blocks = textArea.value.split(/\n\n+/);
+      blocks.forEach((block, i) => createBlock(block.trim(), i));
+      saveState();
+    }
+
+    function createBlock(content, index) {
+      const div = document.createElement('div');
+      div.className = 'block enter';
+      div.draggable = true;
+
+      const pre = document.createElement('pre');
+      pre.id = `block-${index}`;
+      pre.contentEditable = true;
+      pre.innerText = content;
+
+      pre.addEventListener('focus', () => pre.classList.add('editing'));
+      pre.addEventListener('blur', () => pre.classList.remove('editing'));
+
+      pre.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const sel = window.getSelection();
+          const range = sel.getRangeAt(0);
+          const marker = '__SPLIT__';
+          const span = document.createElement('span');
+          span.textContent = marker;
+          range.insertNode(span);
+          sel.removeAllRanges();
+
+          const fullText = pre.innerText;
+          const parts = fullText.split(marker);
+
+          if (parts.length === 2) {
+            pre.innerText = parts[0].trimEnd();
+            const newBlock = createBlock(parts[1].trimStart(), output.children.length);
+            output.insertBefore(newBlock, div.nextSibling);
+            saveState();
+            setTimeout(() => newBlock.querySelector('pre').focus(), 0);
+          }
+        }
+      });
+
+      pre.addEventListener('input', () => saveState());
+
+      const btnGroup = document.createElement('div');
+      btnGroup.className = 'button-group';
+
+      const copyBtn = document.createElement('button');
+      copyBtn.textContent = 'コピー';
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(pre.innerText);
+        showCopyToast();
+      };
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = '削除';
+      deleteBtn.onclick = () => {
+        div.remove();
+        saveState();
+      };
+
+      btnGroup.appendChild(copyBtn);
+      btnGroup.appendChild(deleteBtn);
+
+      div.addEventListener('dragstart', e => {
+        if (document.activeElement === pre) return e.preventDefault();
+        e.dataTransfer.setData('text/plain', index);
+        div.classList.add('dragging');
+      });
+
+      div.addEventListener('dragend', () => div.classList.remove('dragging'));
+      div.addEventListener('dragover', e => {
+        e.preventDefault();
+        div.style.backgroundColor = '#cfd8dc';
+      });
+
+      div.addEventListener('dragleave', () => {
+        div.style.backgroundColor = 'var(--block-bg)';
+      });
+
+      div.addEventListener('drop', e => {
+        e.preventDefault();
+        div.style.backgroundColor = 'var(--block-bg)';
+        const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'));
+        const draggedPre = document.getElementById(`block-${draggedIndex}`);
+        if (!draggedPre || draggedPre === pre) return;
+
+        const fromAbove = draggedPre.getBoundingClientRect().top < pre.getBoundingClientRect().top;
+        pre.innerText = fromAbove
+          ? draggedPre.innerText + '\n\n' + pre.innerText
+          : pre.innerText + '\n\n' + draggedPre.innerText;
+
+        draggedPre.parentElement.remove();
+        saveState();
+      });
+
+      div.appendChild(btnGroup);
+      div.appendChild(pre);
+      output.appendChild(div);
+
+      setTimeout(() => div.classList.remove('enter'), 10);
+      setTimeout(() => div.classList.add('enter-active'), 20);
+
+      return div;
+    }
+
+    function toggleDarkMode() {
+      document.body.classList.toggle('dark');
+    }
+
+    function downloadBlocks() {
+      const blocks = Array.from(output.children).map(div => div.querySelector('pre').innerText);
+      const blob = new Blob([JSON.stringify(blocks, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'blocks.json';
+      a.click();
+    }
+
+    document.getElementById('loadJson').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(reader.result);
+          output.innerHTML = '';
+          data.forEach((text, i) => createBlock(text, i));
+          saveState();
+        } catch (err) {
+          alert('JSONファイルの読み込みに失敗しました');
+        }
+      };
+      reader.readAsText(file);
+    });
+  </script>
+</body>
+</html>
